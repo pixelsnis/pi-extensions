@@ -1,0 +1,27 @@
+{
+  "name": "pixelsnis-pi-extensions",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Pi extensions maintained by pixelsnis",
+  "workspaces": [
+    "extensions/*"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/pixelsnis/pi-extensions.git"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-extension"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/plan-mode",
+      "./extensions/codex-fast-mode"
+    ],
+    "skills": [
+      "./extensions/plan-mode/skills/plan-writing"
+    ]
+  }
+}

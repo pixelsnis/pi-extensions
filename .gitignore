@@ -1,0 +1,9 @@
+# Node and npm generated files
+node_modules/
+.npm/
+npm-debug.log*
+*.tgz
+
+# Operating system metadata
+.DS_Store
+Thumbs.db

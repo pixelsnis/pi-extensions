@@ -1,0 +1,35 @@
+{
+  "name": "@pixelsnis/pi-codex-fast-mode",
+  "version": "0.1.0",
+  "description": "Adds priority service-tier aliases for available OpenAI and OpenAI Codex models in Pi.",
+  "type": "module",
+  "files": [
+    "index.ts",
+    "README.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/pixelsnis/pi-extensions.git",
+    "directory": "extensions/codex-fast-mode"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "pi",
+    "openai",
+    "codex",
+    "fast-mode"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}
