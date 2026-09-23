@@ -1002,6 +1002,10 @@ Implement the plan in order. Run only verification authorized by the plan or req
 			ctx.ui.notify("Saved plan path was missing or did not belong to this session; create a new plan before review.", "warning");
 			if (mode === "plan") persistState();
 		}
+		updateBadge(ctx);
+	});
+
+	pi.on("resources_discover", async (_event, ctx) => {
 		const selected = profileSelection(config);
 		const modeSettings = mode === "plan" ? selected?.profile.plan : selected?.profile.build;
 		if (modeSettings) {
@@ -1011,6 +1015,5 @@ Implement the plan in order. Run only verification authorized by the plan or req
 				ctx.ui.notify(`Configured ${mode} model is unavailable: ${error instanceof Error ? error.message : String(error)}`, "error");
 			}
 		}
-		updateBadge(ctx);
 	});
 }
