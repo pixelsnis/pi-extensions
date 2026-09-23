@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { homedir, tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { lstat, open, readFile, realpath, rename, unlink } from "node:fs/promises";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, SessionManager } from "@earendil-works/pi-coding-agent";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
@@ -126,7 +126,7 @@ function isReadOnlyBashCommand(command: unknown): boolean {
 
 // Intentionally identical in Plan and Build. Mode-specific state is a separate
 // custom context message so toggling modes never rebuilds the system prompt.
-const STATIC_SYSTEM_INSTRUCTIONS = `\n\n## Plan-mode extension workflow\nThe packaged skill named plan-writing contains the canonical, generic implementation-planning instructions. Whenever the extension context says Plan mode is active, load and follow the discovered plan-writing skill before drafting or refining a plan. Use this extension's plan_save tool to write the plan to its extension-owned file, then call plan_present with only the returned file path. plan_present displays that file for explicit user review; do not send the plan inline, treat a tool call as approval, or execute it until the user approves in the review UI. In Plan mode, take no resource-mutating action: plan_save is the only write capability. This instruction is fixed across modes; the extension supplies the current mode separately.`;
+const STATIC_SYSTEM_INSTRUCTIONS = `\n\n## Plan-mode extension workflow\nThe packaged skill named plan-writing contains the canonical, generic implementation-planning instructions. Whenever the extension context says Plan mode is active, load and follow the discovered plan-writing skill before drafting or refining a plan. Use this extension's plan_save tool to write the plan to its extension-owned file, then call plan_present with only the exact relative path returned by plan_save. plan_present displays that file for explicit user review; do not send the plan inline, treat a tool call as approval, or execute it until the user approves in the review UI. In Plan mode, take no resource-mutating action: plan_save is the only write capability. This instruction is fixed across modes; the extension supplies the current mode separately.`;
 
 type ModelRef = { provider: string; id: string };
 type Mode = "plan" | "build";
@@ -159,7 +159,6 @@ type PendingApproval = {
 type FreshHandoff = {
 	token: string;
 	path: string;
-	projectRoot: string;
 	ownerSessionId: string;
 	profileName?: string;
 	profileSnapshot?: ProfileConfig;
@@ -487,9 +486,13 @@ async function isOwnedPlanPath(pi: ExtensionAPI, ctx: ExtensionContext, path: st
 	}
 }
 
+function formatPlanPath(path: string, cwd: string): string {
+	return relative(cwd, path);
+}
+
 function planContext(mode: Mode, path: string | undefined): string {
 	if (mode === "plan") {
-		return `[PLAN MODE ACTIVE]\nYou are planning only. Take no resource-mutating actions. The tool guard permits read, grep, find, ls, plan_save, and plan_present; Bash is conditionally available only for simple read-only commands from pwd, ls, find, grep, rg, cat, head, tail, wc, file, stat, and Git status/diff/log/show, including pipelines made only from those commands. Shell chaining, redirection, substitutions, unrecognized commands, mutating/execution options, and interactive !/!! commands are blocked. Load and follow the discovered plan-writing skill before creating or refining the implementation plan. Inspect relevant project sources and instructions; keep all planning edits inside the extension-owned plan file. Use plan_save({content}) to create/update that file, then call plan_present({path}) with only the exact path returned by plan_save. Never present the plan inline or execute it. Only an explicit approval selection inside the review UI authorizes execution.\nCurrent plan file: ${path ?? "not created yet; plan_save will create it"}`;
+		return `[PLAN MODE ACTIVE]\nYou are planning only. Take no resource-mutating actions. The tool guard permits read, grep, find, ls, plan_save, and plan_present; Bash is conditionally available only for simple read-only commands from pwd, ls, find, grep, rg, cat, head, tail, wc, file, stat, and Git status/diff/log/show, including pipelines made only from those commands. Shell chaining, redirection, substitutions, unrecognized commands, mutating/execution options, and interactive !/!! commands are blocked. Load and follow the discovered plan-writing skill before creating or refining the implementation plan. Inspect relevant project sources and instructions; keep all planning edits inside the extension-owned plan file. Use plan_save({content}) to create/update that file, then call plan_present({path}) with only the exact relative path returned by plan_save. Never present the plan inline or execute it. Only an explicit approval selection inside the review UI authorizes execution.\nCurrent plan file: ${path ?? "not created yet; plan_save will create it"}`;
 	}
 	return `[BUILD MODE ACTIVE]\nThe user has switched to Build mode. Follow the latest user request normally with the available tools. If the user approved a plan, read the approved plan file and follow its steps; if it is missing, stop and ask rather than guessing.\nPlan file: ${path ?? "none"}`;
 }
@@ -622,12 +625,12 @@ export default function planMode(pi: ExtensionAPI): void {
 		return planPathPromise;
 	}
 
-	pi.on("before_agent_start", async (event) => ({
+	pi.on("before_agent_start", async (event, ctx) => ({
 		// This exact suffix is independent of mode and is never changed by /plan.
 		systemPrompt: `${event.systemPrompt}${STATIC_SYSTEM_INSTRUCTIONS}`,
 		message: {
 			customType: "plan-mode-context",
-			content: planContext(mode, planPath),
+			content: planContext(mode, planPath ? formatPlanPath(planPath, ctx.cwd) : undefined),
 			display: false,
 		},
 	}));
@@ -652,7 +655,7 @@ export default function planMode(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "plan_save",
 		label: "Save Plan",
-		description: "Write or refine the current implementation plan in the extension-owned plan file. This is the only write operation permitted in Plan mode. Returns the absolute path; it never accepts a destination path.",
+		description: "Write or refine the current implementation plan in the extension-owned plan file. This is the only write operation permitted in Plan mode. Returns the path relative to the session working directory; it never accepts a destination path.",
 		parameters: Type.Object({ content: Type.String({ description: "Complete plan Markdown to create or replace" }) }, { additionalProperties: false }),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			if (mode !== "plan") throw new Error("plan_save is available only in Plan mode");
@@ -660,9 +663,10 @@ export default function planMode(pi: ExtensionAPI): void {
 			await withFileMutationQueue(target, async () => writePlan(target, params.content));
 			planPath = target;
 			persistState();
+			const displayPath = formatPlanPath(target, ctx.cwd);
 			return {
-				content: [{ type: "text", text: `Plan saved: ${target}` }],
-				details: { path: target },
+				content: [{ type: "text", text: `Plan saved: ${displayPath}` }],
+				details: { path: displayPath },
 			};
 		},
 	});
@@ -670,21 +674,22 @@ export default function planMode(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "plan_present",
 		label: "Review Plan",
-		description: "Present the extension-owned plan file in a scrollable review UI. Supply only the absolute path returned by plan_save; never supply plan contents. The user chooses refinement, approval, or cancel in the UI.",
-		parameters: Type.Object({ path: Type.String({ description: "Exact absolute path returned by plan_save" }) }, { additionalProperties: false }),
+		description: "Present the extension-owned plan file in a scrollable review UI. Supply only the exact path relative to the session working directory returned by plan_save; never supply an absolute path, alternate spelling, or plan contents. The user chooses refinement, approval, or cancel in the UI.",
+		parameters: Type.Object({ path: Type.String({ description: "Exact relative path returned by plan_save, based on the session working directory" }) }, { additionalProperties: false }),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			if (mode !== "plan") throw new Error("plan_present is available only in Plan mode");
 			if (ctx.mode !== "tui") {
 				return { content: [{ type: "text", text: "Interactive plan approval requires Pi TUI mode. No approval was recorded." }], details: {}, terminate: true };
 			}
 			if (reviewActive) throw new Error("A plan review is already open");
-			if (!planPath || resolve(params.path) !== planPath || params.path !== planPath) {
-				throw new Error("plan_present accepts only the exact current extension-owned plan path");
+			if (!planPath || isAbsolute(params.path) || resolve(ctx.cwd, params.path) !== planPath ||
+				params.path !== formatPlanPath(planPath, ctx.cwd)) {
+				throw new Error("plan_present accepts only the exact current extension-owned plan path relative to the session working directory");
 			}
 			reviewActive = true;
 			try {
 				const reviewedText = await readPlan(planPath);
-				const choice: ReviewChoice | undefined = await showPlanReview(ctx, planPath, reviewedText);
+				const choice: ReviewChoice | undefined = await showPlanReview(ctx, formatPlanPath(planPath, ctx.cwd), reviewedText);
 				if (!choice || choice === "cancel") {
 					ctx.ui.notify("Plan review cancelled. Plan mode remains active.", "info");
 					return { content: [{ type: "text", text: "Review cancelled; no approval was recorded." }], details: { choice: "cancel" }, terminate: true };
@@ -819,7 +824,7 @@ export default function planMode(pi: ExtensionAPI): void {
 				if (entry.type !== "custom" || entry.customType !== FRESH_HANDOFF_TYPE || !entry.data || typeof entry.data !== "object") continue;
 				const data = entry.data as Partial<FreshHandoff>;
 				if (data.token === token && typeof data.path === "string" &&
-					typeof data.projectRoot === "string" && typeof data.ownerSessionId === "string") {
+					typeof data.ownerSessionId === "string") {
 					handoff = data as FreshHandoff;
 					break;
 				}
@@ -868,11 +873,10 @@ export default function planMode(pi: ExtensionAPI): void {
 			ctx.ui.notify("Starting Build in the fresh session.", "info");
 			const kickoff = `Implement the complete approved plan below in this fresh Pi session.
 
-Project root: ${handoff.projectRoot}
-Plan file: ${handoff.path}
+Plan file: ${formatPlanPath(handoff.path, ctx.cwd)}
 
 Before editing:
-1. Confirm the project root and inspect git status --short --branch. Preserve existing changes.
+1. Inspect git status --short --branch from the existing working directory. Preserve existing changes.
 2. Read project instructions for the files in the plan.
 3. Read the plan context, constraints, relevant assumptions, all implementation steps, and named source documents/interfaces.
 4. If repository state conflicts with the plan or a required decision is missing, stop and report that issue instead of guessing.
@@ -941,21 +945,18 @@ Implement the plan in order. Run only verification authorized by the plan or req
 				mode = "build";
 				persistState();
 				updateBadge(ctx);
-				const kickoff = `Execute the approved implementation plan at ${approval.path}. Read it, follow the plan in order, and stop if the file is unavailable or project state conflicts with it.`;
+				const kickoff = `Execute the approved implementation plan at ${formatPlanPath(approval.path, ctx.cwd)}. Read it, follow the plan in order, and stop if the file is unavailable or project state conflicts with it.`;
 				pi.sendUserMessage(kickoff);
 				ctx.ui.notify("Approved. Continuing execution in this session.", "info");
 				return;
 			}
 
-			const projectRootResult = await pi.exec("git", ["rev-parse", "--show-toplevel"], { cwd: ctx.cwd }).catch(() => undefined);
-			const projectRoot = projectRootResult?.code === 0 ? projectRootResult.stdout.trim() : resolve(ctx.cwd);
 			const parentSession = ctx.sessionManager.getSessionFile();
 			const freshToken = randomUUID();
 			const setup = async (sessionManager: SessionManager) => {
 				sessionManager.appendCustomEntry(FRESH_HANDOFF_TYPE, {
 					token: freshToken,
 					path: approval.path,
-					projectRoot,
 					ownerSessionId: approval.sessionId,
 					profileName: approval.profileName,
 					profileSnapshot: approval.profileSnapshot,

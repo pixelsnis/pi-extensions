@@ -25,7 +25,7 @@ git_admin_dir="$(git -C "$project_root" rev-parse --absolute-git-dir)"
 mkdir -p "$git_admin_dir/implementation-plans"
 ```
 
-Save to `$git_admin_dir/implementation-plans/<short-kebab-case-slug>-plan.md`. For a non-Git project, create a unique directory under `${TMPDIR:-/tmp}` prefixed with the project directory name, and save the plan there. Report the absolute plan path. Never put a temporary plan in tracked documentation or commit it.
+Save to `$git_admin_dir/implementation-plans/<short-kebab-case-slug>-plan.md`. For a non-Git project, create a unique directory under `${TMPDIR:-/tmp}` prefixed with the project directory name, and save the plan there. When using Plan Mode's `plan_save`, use and report only the exact relative path it returns; the extension may retain the canonical absolute path internally, but callers must not substitute or expose it. Never put a temporary plan in tracked documentation or commit it.
 
 ## Required plan structure
 
@@ -76,9 +76,9 @@ Include at least one behavior-specific check with its input/action and expected 
 
 ## Fresh-context handoff
 
-When handing work to a new implementer, give the absolute project root, absolute plan path, exact step or scope, and execution constraints. The handoff itself must direct the implementer to:
+When handing work to a fresh Pi session through Plan Mode approval, rely on the session's existing working directory; do not inject or request an absolute project root. Refer to the approved plan using only the exact relative path returned by `plan_save`, and include the exact step or scope and execution constraints. The handoff itself must direct the new implementer to:
 
-1. Confirm the project root and inspect `git status --short --branch`, preserving existing changes.
+1. Inspect `git status --short --branch` from the existing working directory, preserving existing changes.
 2. Read project instructions for the assigned files.
 3. Read the plan context, constraints, applicable assumptions, the full assigned step, and its named sources/interfaces.
 4. Stop and report any conflict or missing required decision instead of guessing.

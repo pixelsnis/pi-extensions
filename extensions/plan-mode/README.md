@@ -36,8 +36,8 @@ The extension injects a hidden mode-context message, but does not display the pl
 ## Save and review a plan
 
 1. Switch to Plan with `/plan` and ask Pi to inspect the project and prepare a plan.
-2. The agent reads the `plan-writing` skill and saves the plan using `plan_save`. That tool accepts Markdown only; it never accepts a destination path.
-3. The agent calls `plan_present` with the exact path returned by `plan_save`. In the Pi TUI, a scrollable review shows the plan and requires an explicit choice:
+2. The agent reads the `plan-writing` skill and saves the plan using `plan_save`. That tool accepts Markdown only; it never accepts a destination path. It returns a path relative to the session working directory.
+3. The agent calls `plan_present` with only the exact relative path string returned by `plan_save`. Do not substitute an absolute path or another spelling, even if it resolves to the same file. In the Pi TUI, a scrollable review shows the plan and requires an explicit choice:
    - **R — Refine:** return to chat in Plan mode without recording approval.
    - **N — Approve & Execute:** start a linked fresh session in Build mode.
    - **H — Approve & Execute Here:** switch this session to Build mode and continue here.
@@ -51,7 +51,7 @@ The internal `/plan-handoff` and `/plan-build-start` commands carry the approved
 
 - In a Git project, the extension stores plans beneath the repository's Git administrative directory in `implementation-plans/` (normally `.git/implementation-plans/`). Plans are not ordinary tracked project files.
 - Outside a Git project, it creates a unique `<project>-implementation-plans.*` directory under the operating system's temporary directory.
-- The extension creates private directories/files, requires a non-empty plan no larger than 200 KiB, and rejects redirected directories, symlinks, and linked/non-regular plan files. `plan_present` accepts only the current path returned by `plan_save`.
+- The extension creates private directories/files, requires a non-empty plan no larger than 200 KiB, and rejects redirected directories, symlinks, and linked/non-regular plan files. It stores and validates the canonical absolute plan path internally, but `plan_present` accepts only the exact relative path string returned by `plan_save` for the current session working directory.
 
 Keep the path returned by the tool; do not guess or substitute a path. Plans in temporary storage may be removed by the operating system.
 
