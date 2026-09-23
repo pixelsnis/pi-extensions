@@ -150,6 +150,44 @@ function wrapProvider(provider: Provider, providerId: OpenAIProviderId): Provide
 }
 
 export default function (pi: ExtensionAPI): void {
+  pi.registerCommand("codex-fast", {
+    description: "Toggle between an OpenAI model and its fast alias",
+    handler: async (args, ctx) => {
+      if (args.trim()) {
+        ctx.ui.notify("Usage: /codex-fast", "warning");
+        return;
+      }
+
+      if (!ctx.isIdle()) {
+        ctx.ui.notify("Cannot toggle models while an agent turn is active.", "warning");
+        return;
+      }
+
+      const current = ctx.model;
+      if (!current || !PROVIDER_IDS.includes(current.provider as OpenAIProviderId)) {
+        ctx.ui.notify("/codex-fast requires a selected OpenAI or OpenAI Codex model.", "warning");
+        return;
+      }
+
+      const targetId = current.id.endsWith(FAST_SUFFIX)
+        ? current.id.slice(0, -FAST_SUFFIX.length)
+        : `${current.id}${FAST_SUFFIX}`;
+      const target = ctx.modelRegistry.find(current.provider, targetId);
+      if (!target) {
+        ctx.ui.notify(`No matching model found for ${current.provider}/${targetId}.`, "warning");
+        return;
+      }
+
+      const activated = await pi.setModel(target);
+      if (!activated) {
+        ctx.ui.notify(`Could not select ${target.provider}/${target.id}: authentication is unavailable.`, "error");
+        return;
+      }
+
+      ctx.ui.notify(`Selected ${target.provider}/${target.id}.`, "info");
+    },
+  });
+
   pi.on("session_start", (_event, ctx) => {
     for (const providerId of PROVIDER_IDS) {
       const provider = ctx.modelRegistry.getProvider(providerId);
