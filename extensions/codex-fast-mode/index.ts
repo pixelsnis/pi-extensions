@@ -29,7 +29,12 @@ function createFastAliases(
   const aliasBases = new Map<string, string>();
 
   for (const model of models) {
-    if (model.provider !== providerId || !model.id || model.id.endsWith(FAST_SUFFIX)) {
+    if (
+      model.provider !== providerId ||
+      !model.id ||
+      (!model.id.startsWith("gpt-5.6") && !model.id.startsWith("gpt-6")) ||
+      model.id.endsWith(FAST_SUFFIX)
+    ) {
       continue;
     }
 
