@@ -16,12 +16,13 @@ const READ_ONLY_BASH_COMMANDS = new Set([
 ]);
 const GIT_READ_ONLY_SUBCOMMANDS = new Set(["status", "diff", "log", "show"]);
 
-/** Parse only plain words, quoted literals, and pipelines. Anything the small
- * grammar cannot represent is rejected instead of being delegated to a shell. */
-function parseReadOnlyBashCommand(command: unknown): string[][] | undefined {
-	if (typeof command !== "string" || !command.trim() || /[\r\n\0\x00-\x08\x0b-\x1f\x7f]/.test(command)) return undefined;
+/** Parse plain words, quoted literals, pipelines, and safe && chains. Anything
+ * the small grammar cannot represent is rejected instead of being delegated to a shell. */
+function parseReadOnlyBashCommand(command: unknown): string[][][] | undefined {
+	if (typeof command !== "string" || !command.trim() || /[\r\n\u2028\u2029\0\x00-\x08\x0b-\x1f\x7f]/.test(command)) return undefined;
 
-	const stages: string[][] = [];
+	const conjunctions: string[][][] = [];
+	let pipelines: string[][] = [];
 	let stage: string[] = [];
 	let word = "";
 	let hasWord = false;
@@ -33,37 +34,77 @@ function parseReadOnlyBashCommand(command: unknown): string[][] | undefined {
 		hasWord = false;
 	};
 
-	for (const char of command) {
-		if (quote) {
-			if (char === quote) quote = undefined;
-			else if (char === "\\" || char === "$" || char === "`" || char === "!") return undefined;
+	for (let i = 0; i < command.length;) {
+		const char = command[i]!;
+		if (quote === "'") {
+			if (char === "'") quote = undefined;
 			else word += char;
+			i++;
+			continue;
+		}
+		if (quote === '"') {
+			if (char === '"') {
+				quote = undefined;
+				i++;
+				continue;
+			}
+			if (char === "$" || char === "`" || char === "!") return undefined;
+			if (char === "\\") {
+				const next = command[i + 1];
+				if (next === undefined || next === "!") return undefined;
+				if (next === "$" || next === "`" || next === '"' || next === "\\") {
+					word += next;
+					i += 2;
+					continue;
+				}
+				// In double quotes, a backslash before any other character is literal.
+				word += char;
+				i++;
+				continue;
+			}
+			word += char;
+			i++;
 			continue;
 		}
 		if (char === "'" || char === '"') {
 			quote = char;
 			hasWord = true;
+			i++;
 		} else if (char === "|") {
+			if (command[i + 1] === "|") return undefined;
 			finishWord();
 			if (!stage.length) return undefined;
-			stages.push(stage);
+			pipelines.push(stage);
 			stage = [];
-		} else if (/\s/.test(char)) {
+			i++;
+		} else if (char === "&") {
+			if (command[i + 1] !== "&") return undefined;
 			finishWord();
+			if (!stage.length) return undefined;
+			pipelines.push(stage);
+			conjunctions.push(pipelines);
+			pipelines = [];
+			stage = [];
+			i += 2;
+		} else if (char === " " || char === "\t") {
+			finishWord();
+			i++;
 		} else if (/[A-Za-z0-9_./:=,+@%-]/.test(char)) {
 			word += char;
 			hasWord = true;
+			i++;
 		} else {
-			// This excludes chaining, redirects, substitutions, glob expansion,
-			// comments, escaped syntax, and all other shell grammar.
+			// This excludes redirects, substitutions, glob expansion, comments,
+			// escaped syntax, and all other shell grammar/operators.
 			return undefined;
 		}
 	}
 	if (quote) return undefined;
 	finishWord();
 	if (!stage.length) return undefined;
-	stages.push(stage);
-	return stages;
+	pipelines.push(stage);
+	conjunctions.push(pipelines);
+	return conjunctions;
 }
 
 const FIND_VALUE_PREDICATES = new Set([
@@ -110,9 +151,9 @@ function hasDangerousReadOption(command: string, args: string[]): boolean {
 }
 
 function isReadOnlyBashCommand(command: unknown): boolean {
-	const stages = parseReadOnlyBashCommand(command);
-	if (!stages) return false;
-	return stages.every((tokens) => {
+	const conjunctions = parseReadOnlyBashCommand(command);
+	if (!conjunctions) return false;
+	return conjunctions.every((pipelines) => pipelines.every((tokens) => {
 		const [name, ...args] = tokens;
 		if (!name) return false;
 		if (name === "git") {
@@ -121,7 +162,7 @@ function isReadOnlyBashCommand(command: unknown): boolean {
 		if (!READ_ONLY_BASH_COMMANDS.has(name)) return false;
 		if (name === "find") return isReadOnlyFind(args);
 		return !hasDangerousReadOption(name, args);
-	});
+	}));
 }
 
 // Intentionally identical in Plan and Build. Mode-specific state is a separate
@@ -492,7 +533,7 @@ function formatPlanPath(path: string, cwd: string): string {
 
 function planContext(mode: Mode, path: string | undefined): string {
 	if (mode === "plan") {
-		return `[PLAN MODE ACTIVE]\nYou are planning only. Take no resource-mutating actions. The tool guard permits read, grep, find, ls, plan_save, and plan_present; Bash is conditionally available only for simple read-only commands from pwd, ls, find, grep, rg, cat, head, tail, wc, file, stat, and Git status/diff/log/show, including pipelines made only from those commands. Shell chaining, redirection, substitutions, unrecognized commands, mutating/execution options, and interactive !/!! commands are blocked. Load and follow the discovered plan-writing skill before creating or refining the implementation plan. Inspect relevant project sources and instructions; keep all planning edits inside the extension-owned plan file. Use plan_save({content}) to create/update that file, then call plan_present({path}) with only the exact relative path returned by plan_save. Never present the plan inline or execute it. Only an explicit approval selection inside the review UI authorizes execution.\nCurrent plan file: ${path ?? "not created yet; plan_save will create it"}`;
+		return `[PLAN MODE ACTIVE]\nYou are planning only. Take no resource-mutating actions. The tool guard permits read, grep, find, ls, plan_save, and plan_present; Bash is conditionally available only for simple read-only commands from pwd, ls, find, grep, rg, cat, head, tail, wc, file, stat, and Git status/diff/log/show. Pipelines and && chains are allowed only when every command independently passes the same checks; for example, pwd && ls -la, rg -n 'PLAN_TOOLS\\b' extensions/plan-mode/index.ts, rg -n '.*;$' extensions/plan-mode/index.ts, and rg -n 'PLAN_TOOLS|READ_ONLY_BASH_COMMANDS' extensions/plan-mode/index.ts | head -5 && git status --short --branch. Single-quoted text is literal; double-quoted text rejects unescaped $, backticks, and !. Other shell chaining/operators (including ;, ||, and &), redirection, substitutions, unrecognized commands, mutating/execution options, and interactive !/!! commands are blocked. Load and follow the discovered plan-writing skill before creating or refining the implementation plan. Inspect relevant project sources and instructions; keep all planning edits inside the extension-owned plan file. Use plan_save({content}) to create/update that file, then call plan_present({path}) with only the exact relative path returned by plan_save. Never present the plan inline or execute it. Only an explicit approval selection inside the review UI authorizes execution.\nCurrent plan file: ${path ?? "not created yet; plan_save will create it"}`;
 	}
 	return `[BUILD MODE ACTIVE]\nThe user has switched to Build mode. Follow the latest user request normally with the available tools. If the user approved a plan, read the approved plan file and follow its steps; if it is missing, stop and ask rather than guessing.\nPlan file: ${path ?? "none"}`;
 }
@@ -641,7 +682,7 @@ export default function planMode(pi: ExtensionAPI): void {
 		return {
 			block: true,
 			reason: event.toolName === "bash"
-				? "Plan mode permits Bash only for simple read-only pwd/ls/find/grep/rg/cat/head/tail/wc/file/stat commands and Git status/diff/log/show, including pipelines of permitted commands. Chaining, redirection, substitutions, unlisted commands, mutating/execution options, and interactive !/!! commands are blocked."
+				? "Plan mode permits Bash only for simple read-only pwd/ls/find/grep/rg/cat/head/tail/wc/file/stat commands and Git status/diff/log/show, including pipelines and && chains where every command is permitted (for example, pwd && ls -la or rg -n 'PLAN_TOOLS\\b' extensions/plan-mode/index.ts). Other shell chaining/operators (including ;, ||, and &), redirection, substitutions, unlisted commands, mutating/execution options, and interactive !/!! commands are blocked."
 				: `Plan mode blocks ${event.toolName}: no resource-mutating or unreviewed tools are available. Use read/grep/find/ls or an approved read-only Bash command to inspect, plan_save for the plan file, and plan_present for approval. Toggle with /plan only when you intend to build.`,
 		};
 	});
