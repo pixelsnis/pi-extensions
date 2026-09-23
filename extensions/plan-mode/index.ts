@@ -11,6 +11,118 @@ import { showPlanReview, type ReviewChoice } from "./review-ui.ts";
 const CONFIG_NAME = "plan-mode.json";
 const STATE_TYPE = "plan-mode-state";
 const PLAN_TOOLS = new Set(["read", "grep", "find", "ls", "plan_save", "plan_present"]);
+const READ_ONLY_BASH_COMMANDS = new Set([
+	"pwd", "ls", "find", "grep", "rg", "cat", "head", "tail", "wc", "file", "stat",
+]);
+const GIT_READ_ONLY_SUBCOMMANDS = new Set(["status", "diff", "log", "show"]);
+
+/** Parse only plain words, quoted literals, and pipelines. Anything the small
+ * grammar cannot represent is rejected instead of being delegated to a shell. */
+function parseReadOnlyBashCommand(command: unknown): string[][] | undefined {
+	if (typeof command !== "string" || !command.trim() || /[\r\n\0\x00-\x08\x0b-\x1f\x7f]/.test(command)) return undefined;
+
+	const stages: string[][] = [];
+	let stage: string[] = [];
+	let word = "";
+	let hasWord = false;
+	let quote: "'" | '"' | undefined;
+	const finishWord = () => {
+		if (!hasWord) return;
+		stage.push(word);
+		word = "";
+		hasWord = false;
+	};
+
+	for (const char of command) {
+		if (quote) {
+			if (char === quote) quote = undefined;
+			else if (char === "\\" || char === "$" || char === "`" || char === "!") return undefined;
+			else word += char;
+			continue;
+		}
+		if (char === "'" || char === '"') {
+			quote = char;
+			hasWord = true;
+		} else if (char === "|") {
+			finishWord();
+			if (!stage.length) return undefined;
+			stages.push(stage);
+			stage = [];
+		} else if (/\s/.test(char)) {
+			finishWord();
+		} else if (/[A-Za-z0-9_./:=,+@%-]/.test(char)) {
+			word += char;
+			hasWord = true;
+		} else {
+			// This excludes chaining, redirects, substitutions, glob expansion,
+			// comments, escaped syntax, and all other shell grammar.
+			return undefined;
+		}
+	}
+	if (quote) return undefined;
+	finishWord();
+	if (!stage.length) return undefined;
+	stages.push(stage);
+	return stages;
+}
+
+const FIND_VALUE_PREDICATES = new Set([
+	"-amin", "-anewer", "-atime", "-cmin", "-cnewer", "-ctime", "-gid", "-group",
+	"-iname", "-inum", "-ipath", "-iregex", "-iwholename", "-maxdepth", "-mindepth",
+	"-mmin", "-mtime", "-name", "-newer", "-path", "-perm", "-printf", "-regex",
+	"-size", "-samefile", "-type", "-uid", "-user", "-wholename",
+]);
+const FIND_SAFE_PREDICATES = new Set([
+	"-a", "-and", "-daystart", "-depth", "-empty", "-executable", "-false", "-follow",
+	"-ignore_readdir_race", "-ls", "-mount", "-noleaf", "-noignore_readdir_race", "-not",
+	"-o", "-or", "-print", "-print0", "-quit", "-readable", "-true", "-writable", "-xdev", ",",
+]);
+const FIND_TYPES = new Set(["b", "c", "d", "f", "l", "p", "s", "D", "w"]);
+
+function isReadOnlyFind(args: string[]): boolean {
+	if (args.length === 0) return false;
+	for (let i = 0; i < args.length; i++) {
+		const arg = args[i]!;
+		if (/^-(?:exec|ok|delete|fprint|fprintf|fls)/i.test(arg)) return false;
+		if (FIND_VALUE_PREDICATES.has(arg)) {
+			if (i + 1 >= args.length) return false;
+			if (arg === "-type" && !FIND_TYPES.has(args[i + 1]!)) return false;
+			if ((arg === "-maxdepth" || arg === "-mindepth") && !/^\d+$/.test(args[i + 1]!)) return false;
+			i++;
+			continue;
+		}
+		if (FIND_SAFE_PREDICATES.has(arg) || arg === "-H" || arg === "-L" || arg === "-P") continue;
+		// Starting paths are inert operands. Unknown find options/actions fail closed.
+		if (arg.startsWith("-")) return false;
+	}
+	return true;
+}
+
+function hasDangerousReadOption(command: string, args: string[]): boolean {
+	if ((command === "rg" || command === "grep") && args.some((arg) => /^--pre(?:-glob)?(?:=|$)/.test(arg))) return true;
+	if (command === "tail" && args.some((arg) => /^-[^-]*[fF]/.test(arg) || /^--follow(?:=|$)/.test(arg))) return true;
+	if (command === "file" && args.some((arg) => /^--compile(?:=|$)/.test(arg) || /^-[^-]*C/.test(arg))) return true;
+	if (command === "git") {
+		const blockedGitOptions = /^(?:--(?:output|ext-diff|textconv|paginate|pager|exec-path|config-env)(?:=|$)|-c$|-o)/;
+		if (args.some((arg) => blockedGitOptions.test(arg))) return true;
+	}
+	return false;
+}
+
+function isReadOnlyBashCommand(command: unknown): boolean {
+	const stages = parseReadOnlyBashCommand(command);
+	if (!stages) return false;
+	return stages.every((tokens) => {
+		const [name, ...args] = tokens;
+		if (!name) return false;
+		if (name === "git") {
+			return GIT_READ_ONLY_SUBCOMMANDS.has(args[0] ?? "") && !hasDangerousReadOption(name, args);
+		}
+		if (!READ_ONLY_BASH_COMMANDS.has(name)) return false;
+		if (name === "find") return isReadOnlyFind(args);
+		return !hasDangerousReadOption(name, args);
+	});
+}
 
 // Intentionally identical in Plan and Build. Mode-specific state is a separate
 // custom context message so toggling modes never rebuilds the system prompt.
@@ -377,7 +489,7 @@ async function isOwnedPlanPath(pi: ExtensionAPI, ctx: ExtensionContext, path: st
 
 function planContext(mode: Mode, path: string | undefined): string {
 	if (mode === "plan") {
-		return `[PLAN MODE ACTIVE]\nYou are planning only. Take no resource-mutating actions; the tool guard blocks all tools except read, grep, find, ls, plan_save, and plan_present. Load and follow the discovered plan-writing skill before creating or refining the implementation plan. Inspect relevant project sources and instructions; keep all planning edits inside the extension-owned plan file. Use plan_save({content}) to create/update that file, then call plan_present({path}) with only the exact path returned by plan_save. Never present the plan inline or execute it. Only an explicit approval selection inside the review UI authorizes execution.\nCurrent plan file: ${path ?? "not created yet; plan_save will create it"}`;
+		return `[PLAN MODE ACTIVE]\nYou are planning only. Take no resource-mutating actions. The tool guard permits read, grep, find, ls, plan_save, and plan_present; Bash is conditionally available only for simple read-only commands from pwd, ls, find, grep, rg, cat, head, tail, wc, file, stat, and Git status/diff/log/show, including pipelines made only from those commands. Shell chaining, redirection, substitutions, unrecognized commands, mutating/execution options, and interactive !/!! commands are blocked. Load and follow the discovered plan-writing skill before creating or refining the implementation plan. Inspect relevant project sources and instructions; keep all planning edits inside the extension-owned plan file. Use plan_save({content}) to create/update that file, then call plan_present({path}) with only the exact path returned by plan_save. Never present the plan inline or execute it. Only an explicit approval selection inside the review UI authorizes execution.\nCurrent plan file: ${path ?? "not created yet; plan_save will create it"}`;
 	}
 	return `[BUILD MODE ACTIVE]\nThe user has switched to Build mode. Follow the latest user request normally with the available tools. If the user approved a plan, read the approved plan file and follow its steps; if it is missing, stop and ask rather than guessing.\nPlan file: ${path ?? "none"}`;
 }
@@ -522,9 +634,12 @@ export default function planMode(pi: ExtensionAPI): void {
 
 	pi.on("tool_call", (event) => {
 		if (mode !== "plan" || PLAN_TOOLS.has(event.toolName)) return;
+		if (event.toolName === "bash" && isReadOnlyBashCommand(event.input.command)) return;
 		return {
 			block: true,
-			reason: `Plan mode blocks ${event.toolName}: no resource-mutating or unreviewed tools are available. Use read/grep/find/ls to inspect, plan_save for the plan file, and plan_present for approval. Toggle with /plan only when you intend to build.`,
+			reason: event.toolName === "bash"
+				? "Plan mode permits Bash only for simple read-only pwd/ls/find/grep/rg/cat/head/tail/wc/file/stat commands and Git status/diff/log/show, including pipelines of permitted commands. Chaining, redirection, substitutions, unlisted commands, mutating/execution options, and interactive !/!! commands are blocked."
+				: `Plan mode blocks ${event.toolName}: no resource-mutating or unreviewed tools are available. Use read/grep/find/ls or an approved read-only Bash command to inspect, plan_save for the plan file, and plan_present for approval. Toggle with /plan only when you intend to build.`,
 		};
 	});
 

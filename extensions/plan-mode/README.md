@@ -22,13 +22,14 @@ Restart Pi or run `/reload` after changing package settings. To remove an instal
 
 Build is the default mode. `/plan` toggles between Build and Plan and updates the mode badge. `/plan-profile` displays the selected model profile; `/plan-profile <name>` changes it.
 
-Plan mode is deny-by-default for **agent tool calls**. Its only permitted tools are:
+Plan mode is deny-by-default for **agent tool calls**. It permits `read`, `grep`, `find`, and `ls` for inspection; `plan_save` to write the current generated plan file; and `plan_present` to open explicit review. Bash is conditionally permitted only for simple read-only commands from this exact allowlist:
 
-- `read`, `grep`, `find`, `ls` for inspection
-- `plan_save` to write the current generated plan file
-- `plan_present` to open explicit review
+- `pwd`, `ls`, `find`, `grep`, `rg`, `cat`, `head`, `tail`, `wc`, `file`, and `stat`
+- Git's `status`, `diff`, `log`, and `show` subcommands
 
-All other tools—including `write`, `edit`, `bash`, and custom tools—are blocked by the `tool_call` guard. Interactive `!`/`!!` shell commands are also blocked. This is a tool gate, not an OS sandbox: extensions execute with Pi's normal process permissions. Pi still records extension state in the session, and the user-invoked `/plan-profile` command may update the profile selection in `plan-mode.json`.
+For example, `ls -la`, `find . -type f -name '*.ts'`, and `rg -n "PLAN_TOOLS" extensions/plan-mode/index.ts | head -20` are accepted; every stage of a pipeline must independently pass the same command checks. The recognizer rejects unlisted commands, shell chaining, redirection, command/process substitutions, multiline input, wrappers, and known mutating or execution options (including `find -delete`, `find -exec*`, `file --compile`, Git external-diff/textconv/output options, and ripgrep preprocessor options). If a command cannot be parsed or its read-only behavior is uncertain, it is blocked. Interactive `!`/`!!` shell commands remain unconditionally blocked, as do other agent tools such as `write`, `edit`, and custom tools.
+
+This is a tool gate, not an OS sandbox: extensions execute with Pi's normal process permissions. Pi still records extension state in the session, and the user-invoked `/plan-profile` command may update the profile selection in `plan-mode.json`.
 
 The extension injects a hidden mode-context message, but does not display the plan inline. Its bundled `plan-writing` skill supplies the generic planning workflow and is included in both this package and the repository's root Pi manifest.
 
