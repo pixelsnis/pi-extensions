@@ -6,7 +6,7 @@ A small monorepo for two Pi extensions: deny-by-default Plan Mode with explicit 
 
 ```text
 .
-├── package.json                         # private npm workspace + umbrella Pi package
+├── package.json                         # npm workspace + umbrella Pi package
 └── extensions/
     ├── plan-mode/
     │   ├── index.ts                     # /plan, profile config, gated tools and approval flow
@@ -62,17 +62,6 @@ npm pack --workspace=@pixelsnis/pi-codex-fast-mode --dry-run
 ```
 
 The Plan Mode tarball should contain its entry and imported TypeScript files, README, and `skills/plan-writing/SKILL.md`. The Codex Fast Mode tarball should contain its entry and README. The child manifests use `files` allowlists to exclude unrelated repository content.
-
-## Releasing the npm workspaces
-
-The root package is `private: true` and is not publishable. Publish each child workspace separately after review, npm authentication, and any desired version updates:
-
-```bash
-npm publish --workspace=@pixelsnis/pi-plan-mode --access public
-npm publish --workspace=@pixelsnis/pi-codex-fast-mode --access public
-```
-
-Do not publish the root workspace. npm packages are **not published by this task**. Publishing requires an authorized npm account for the `@pixelsnis` scope; package-name visibility alone does not grant scope ownership.
 
 ## Compatibility and behavior
 
