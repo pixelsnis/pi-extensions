@@ -18,7 +18,8 @@
   "pi": {
     "extensions": [
       "./extensions/plan-mode",
-      "./extensions/codex-fast-mode"
+      "./extensions/codex-fast-mode",
+      "./extensions/vim-composer"
     ],
     "skills": [
       "./extensions/plan-mode/skills/plan-writing"
