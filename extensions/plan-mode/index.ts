@@ -167,7 +167,7 @@ function isReadOnlyBashCommand(command: unknown): boolean {
 
 // Intentionally identical in Plan and Build. Mode-specific state is a separate
 // custom context message so toggling modes never rebuilds the system prompt.
-const STATIC_SYSTEM_INSTRUCTIONS = `\n\n## Plan-mode extension workflow\nThe packaged skill named plan-writing contains the canonical, generic implementation-planning instructions. Whenever the extension context says Plan mode is active, load and follow the discovered plan-writing skill before drafting or refining a plan. Use this extension's plan_save tool to write the plan to its extension-owned file, then call plan_present with only the exact relative path returned by plan_save. plan_present displays that file for explicit user review; do not send the plan inline, treat a tool call as approval, or execute it until the user approves in the review UI. In Plan mode, take no resource-mutating action: plan_save is the only write capability. This instruction is fixed across modes; the extension supplies the current mode separately.`;
+const STATIC_SYSTEM_INSTRUCTIONS = `\n\n## Plan-mode extension workflow\nThe packaged skill named plan-writing contains the canonical, generic implementation-planning instructions. Whenever the extension context says Plan mode is active, load and follow the discovered plan-writing skill before drafting or refining a plan. Use this extension's plan_save tool to write the plan to its extension-owned file, then call plan_present with only the exact relative path returned by plan_save. plan_present displays that file for explicit user review; do not send the plan inline, treat a tool call as approval, or execute it until the user approves in the review UI. In Plan mode, take no resource-mutating action by default: plan_save is the built-in write capability, while tools explicitly listed in allowedTools are trusted exceptions and may have side effects. This instruction is fixed across modes; the extension supplies the current mode separately.`;
 
 type ModelRef = { provider: string; id: string };
 type Mode = "plan" | "build";
@@ -179,6 +179,7 @@ type PlanConfig = {
 	profiles: Record<string, ProfileConfig>;
 	profileOrder: string[];
 	selectedProfile?: string;
+	allowedTools: string[];
 	legacy: boolean;
 };
 type LoadedPlanConfig = { config: PlanConfig; path: string; raw?: string; error?: string };
@@ -244,6 +245,22 @@ function parseModeModel(value: unknown, key: string): ModeModelConfig | undefine
 	return { id, effort };
 }
 
+function parseAllowedTools(value: unknown): string[] {
+	if (value === undefined) return [];
+	if (!Array.isArray(value)) throw new Error("allowedTools must be an array of tool names");
+	const tools: string[] = [];
+	const seen = new Set<string>();
+	for (const [index, tool] of value.entries()) {
+		if (typeof tool !== "string" || !tool || tool.trim() !== tool) {
+			throw new Error(`allowedTools[${index}] must be a non-empty, already-trimmed string`);
+		}
+		if (seen.has(tool)) throw new Error(`allowedTools contains duplicate tool name ${JSON.stringify(tool)}`);
+		seen.add(tool);
+		tools.push(tool);
+	}
+	return tools;
+}
+
 function isPiThinkingLevel(value: unknown): value is PiThinkingLevel {
 	return value === "off" || value === "minimal" || value === "low" || value === "medium" ||
 		value === "high" || value === "xhigh" || value === "max";
@@ -260,7 +277,7 @@ function configFilePath(): string {
 }
 
 function emptyConfig(): PlanConfig {
-	return { profiles: Object.create(null) as Record<string, ProfileConfig>, profileOrder: [], legacy: false };
+	return { profiles: Object.create(null) as Record<string, ProfileConfig>, profileOrder: [], allowedTools: [], legacy: false };
 }
 
 function assertNoDuplicateProfileKeys(raw: string): string[] {
@@ -334,8 +351,9 @@ function parseConfig(raw: string): PlanConfig {
 		Object.prototype.hasOwnProperty.call(record, "build");
 
 	if (hasProfiles && hasLegacyPair) throw new Error("profiles cannot be mixed with top-level plan/build settings");
+	const allowedTools = parseAllowedTools(record.allowedTools);
 	if (hasProfiles) {
-		const unknownKeys = Object.keys(record).filter((key) => key !== "profiles" && key !== "selectedProfile");
+		const unknownKeys = Object.keys(record).filter((key) => key !== "profiles" && key !== "selectedProfile" && key !== "allowedTools");
 		if (unknownKeys.length) throw new Error(`unknown key(s): ${unknownKeys.join(", ")}`);
 		const source = record.profiles;
 		if (!source || typeof source !== "object" || Array.isArray(source)) {
@@ -369,17 +387,17 @@ function parseConfig(raw: string): PlanConfig {
 				throw new Error(`selectedProfile ${JSON.stringify(selectedProfile)} does not name a configured profile`);
 			}
 		}
-		return { profiles, profileOrder: names, selectedProfile, legacy: false };
+		return { profiles, profileOrder: names, selectedProfile, allowedTools, legacy: false };
 	}
 
-	const unknownKeys = Object.keys(record).filter((key) => key !== "plan" && key !== "build");
+	const unknownKeys = Object.keys(record).filter((key) => key !== "plan" && key !== "build" && key !== "allowedTools");
 	if (unknownKeys.length) throw new Error(`unknown key(s): ${unknownKeys.join(", ")}`);
 	const plan = parseModeModel(record.plan, "plan");
 	const build = parseModeModel(record.build, "build");
 	const profiles = Object.create(null) as Record<string, ProfileConfig>;
 	const legacyOrder = plan || build ? ["default"] : [];
 	if (legacyOrder.length) profiles.default = { plan, build };
-	return { profiles, profileOrder: legacyOrder, legacy: true };
+	return { profiles, profileOrder: legacyOrder, allowedTools, legacy: true };
 }
 
 async function loadConfig(): Promise<LoadedPlanConfig> {
@@ -429,7 +447,8 @@ function selectedConfigText(config: PlanConfig, name: string): string {
   "profiles": {
 ${entries.join(",\n")}
   },
-  "selectedProfile": ${JSON.stringify(name)}
+  "selectedProfile": ${JSON.stringify(name)},
+  "allowedTools": ${JSON.stringify(config.allowedTools)}
 }\n`;
 }
 
@@ -531,9 +550,15 @@ function formatPlanPath(path: string, cwd: string): string {
 	return relative(cwd, path);
 }
 
-function planContext(mode: Mode, path: string | undefined): string {
+function planContext(mode: Mode, path: string | undefined, allowedTools: readonly string[] = []): string {
 	if (mode === "plan") {
-		return `[PLAN MODE ACTIVE]\nYou are planning only. Take no resource-mutating actions. The tool guard permits read, grep, find, ls, plan_save, and plan_present; Bash is conditionally available only for simple read-only commands from pwd, ls, find, grep, rg, cat, head, tail, wc, file, stat, and Git status/diff/log/show. Pipelines and && chains are allowed only when every command independently passes the same checks; for example, pwd && ls -la, rg -n 'PLAN_TOOLS\\b' extensions/plan-mode/index.ts, rg -n '.*;$' extensions/plan-mode/index.ts, and rg -n 'PLAN_TOOLS|READ_ONLY_BASH_COMMANDS' extensions/plan-mode/index.ts | head -5 && git status --short --branch. Single-quoted text is literal; double-quoted text rejects unescaped $, backticks, and !. Other shell chaining/operators (including ;, ||, and &), redirection, substitutions, unrecognized commands, mutating/execution options, and interactive !/!! commands are blocked. Load and follow the discovered plan-writing skill before creating or refining the implementation plan. Inspect relevant project sources and instructions; keep all planning edits inside the extension-owned plan file. Use plan_save({content}) to create/update that file, then call plan_present({path}) with only the exact relative path returned by plan_save. Never present the plan inline or execute it. Only an explicit approval selection inside the review UI authorizes execution.\nCurrent plan file: ${path ?? "not created yet; plan_save will create it"}`;
+		const configuredTools = allowedTools.length
+			? ` Explicitly configured additional agent tools (exact, case-sensitive names) are trusted and available when registered: ${allowedTools.map((tool) => JSON.stringify(tool)).join(", ")}. Unknown configured names remain inert; Plan mode does not inspect the side effects of trusted tools, so every call to a matching name is allowed.`
+			: " No additional agent tools are configured.";
+		const bashGuidance = allowedTools.includes("bash")
+			? "Bash is explicitly configured as trusted and bypasses the read-only Bash filter; interactive !/!! commands remain blocked by the separate user_bash handler."
+			: "Bash is conditionally available only for simple read-only commands from pwd, ls, find, grep, rg, cat, head, tail, wc, file, stat, and Git status/diff/log/show. Pipelines and && chains are allowed only when every command independently passes the same checks.";
+		return `[PLAN MODE ACTIVE]\nYou are planning only. Take no resource-mutating actions by default. The tool guard permits the fixed Plan tools read, grep, find, ls, plan_save, and plan_present.${configuredTools} Unlisted agent tools remain blocked. ${bashGuidance} For the default Bash filter, examples include pwd && ls -la, rg -n 'PLAN_TOOLS\\b' extensions/plan-mode/index.ts, rg -n '.*;$' extensions/plan-mode/index.ts, and rg -n 'PLAN_TOOLS|READ_ONLY_BASH_COMMANDS' extensions/plan-mode/index.ts | head -5 && git status --short --branch. Single-quoted text is literal; double-quoted text rejects unescaped $, backticks, and !. Other shell chaining/operators (including ;, ||, and &), redirection, substitutions, unrecognized commands, mutating/execution options, and interactive !/!! commands are blocked by default; interactive !/!! commands remain blocked even when bash is explicitly trusted. Load and follow the discovered plan-writing skill before creating or refining the implementation plan. Inspect relevant project sources and instructions; keep all planning edits inside the extension-owned plan file. Use plan_save({content}) to create/update that file, then call plan_present({path}) with only the exact relative path returned by plan_save. Never present the plan inline or execute it. Only an explicit approval selection inside the review UI authorizes execution.\nCurrent plan file: ${path ?? "not created yet; plan_save will create it"}`;
 	}
 	return `[BUILD MODE ACTIVE]\nThe user has switched to Build mode. Follow the latest user request normally with the available tools. If the user approved a plan, read the approved plan file and follow its steps; if it is missing, stop and ask rather than guessing.\nPlan file: ${path ?? "none"}`;
 }
@@ -646,7 +671,7 @@ export default function planMode(pi: ExtensionAPI): void {
 			}
 			persistState();
 			updateBadge(ctx);
-			ctx.ui.notify(mode === "plan" ? "Plan mode enabled. Only the extension-owned plan file may be written." : "Build mode enabled.", "info");
+			ctx.ui.notify(mode === "plan" ? "Plan mode enabled. The extension-owned plan file is writable; tools named in allowedTools are explicit trust exceptions." : "Build mode enabled.", "info");
 		} catch (error) {
 			ctx.ui.notify(`Mode unchanged: ${error instanceof Error ? error.message : String(error)}`, "error");
 		} finally {
@@ -671,19 +696,19 @@ export default function planMode(pi: ExtensionAPI): void {
 		systemPrompt: `${event.systemPrompt}${STATIC_SYSTEM_INSTRUCTIONS}`,
 		message: {
 			customType: "plan-mode-context",
-			content: planContext(mode, planPath ? formatPlanPath(planPath, ctx.cwd) : undefined),
+			content: planContext(mode, planPath ? formatPlanPath(planPath, ctx.cwd) : undefined, config.allowedTools),
 			display: false,
 		},
 	}));
 
 	pi.on("tool_call", (event) => {
-		if (mode !== "plan" || PLAN_TOOLS.has(event.toolName)) return;
+		if (mode !== "plan" || PLAN_TOOLS.has(event.toolName) || config.allowedTools.includes(event.toolName)) return;
 		if (event.toolName === "bash" && isReadOnlyBashCommand(event.input.command)) return;
 		return {
 			block: true,
 			reason: event.toolName === "bash"
-				? "Plan mode permits Bash only for simple read-only pwd/ls/find/grep/rg/cat/head/tail/wc/file/stat commands and Git status/diff/log/show, including pipelines and && chains where every command is permitted (for example, pwd && ls -la or rg -n 'PLAN_TOOLS\\b' extensions/plan-mode/index.ts). Other shell chaining/operators (including ;, ||, and &), redirection, substitutions, unlisted commands, mutating/execution options, and interactive !/!! commands are blocked."
-				: `Plan mode blocks ${event.toolName}: no resource-mutating or unreviewed tools are available. Use read/grep/find/ls or an approved read-only Bash command to inspect, plan_save for the plan file, and plan_present for approval. Toggle with /plan only when you intend to build.`,
+				? "Plan mode permits Bash only for simple read-only pwd/ls/find/grep/rg/cat/head/tail/wc/file/stat commands and Git status/diff/log/show, including pipelines and && chains where every command is permitted (for example, pwd && ls -la or rg -n 'PLAN_TOOLS\\b' extensions/plan-mode/index.ts). Other shell chaining/operators (including ;, ||, and &), redirection, substitutions, unlisted commands, mutating/execution options, and interactive !/!! commands are blocked. Explicitly listing bash in allowedTools bypasses this filter."
+				: `Plan mode blocks ${event.toolName}: it is neither a fixed Plan-mode tool nor an exact name in allowedTools. Explicitly configured names are trusted without side-effect inspection; unlisted tools remain blocked. Use read/grep/find/ls or an approved read-only Bash command to inspect, plan_save for the plan file, and plan_present for approval. Toggle with /plan only when you intend to build.`,
 		};
 	});
 
@@ -696,7 +721,7 @@ export default function planMode(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "plan_save",
 		label: "Save Plan",
-		description: "Write or refine the current implementation plan in the extension-owned plan file. This is the only write operation permitted in Plan mode. Returns the path relative to the session working directory; it never accepts a destination path.",
+		description: "Write or refine the current implementation plan in the extension-owned plan file. This is the built-in plan-file write operation permitted in Plan mode; tools named in allowedTools are separate explicit trust exceptions. Returns the path relative to the session working directory; it never accepts a destination path.",
 		parameters: Type.Object({ content: Type.String({ description: "Complete plan Markdown to create or replace" }) }, { additionalProperties: false }),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			if (mode !== "plan") throw new Error("plan_save is available only in Plan mode");

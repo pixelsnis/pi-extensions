@@ -22,14 +22,22 @@ Restart Pi or run `/reload` after changing package settings. To remove an instal
 
 Build is the default mode. `/plan` toggles between Build and Plan and updates the mode badge. `/plan-profile` displays the selected model profile; `/plan-profile <name>` changes it.
 
-Plan mode is deny-by-default for **agent tool calls**. It permits `read`, `grep`, `find`, and `ls` for inspection; `plan_save` to write the current generated plan file; and `plan_present` to open explicit review. Bash is conditionally permitted only for simple read-only commands from this exact allowlist:
+Plan mode is deny-by-default for **agent tool calls**. It permits `read`, `grep`, `find`, and `ls` for inspection; `plan_save` to write the current generated plan file; and `plan_present` to open explicit review. A top-level `allowedTools` list can add exact, case-sensitive agent tool names to this built-in set:
+
+```json
+"allowedTools": ["ask_user_question", "web_search"]
+```
+
+The list is global and additive across all model profiles. Omit it or use `[]` to retain the default behavior. Names are accepted before a tool is registered, so a valid unknown name is harmless until a matching third-party tool becomes available; the matching is exact and case-sensitive. Each name must be a non-empty, already-trimmed string, and duplicate names are configuration errors. Unlisted agent tools remain blocked.
+
+Without `"bash"` in `allowedTools`, Bash is conditionally permitted only for simple read-only commands from this exact allowlist:
 
 - `pwd`, `ls`, `find`, `grep`, `rg`, `cat`, `head`, `tail`, `wc`, `file`, and `stat`
 - Git's `status`, `diff`, `log`, and `show` subcommands
 
-For example, `ls -la`, `find . -type f -name '*.ts'`, `pwd && ls -la`, `rg -n 'PLAN_TOOLS\b' extensions/plan-mode/index.ts`, `rg -n '.*;$' extensions/plan-mode/index.ts`, and `rg -n 'PLAN_TOOLS|READ_ONLY_BASH_COMMANDS' extensions/plan-mode/index.ts | head -5 && git status --short --branch` are accepted. Every command in every pipeline and `&&` branch must independently pass the same checks. Single-quoted text is literal, so quoted regex punctuation such as backslashes and `$` is safe; double-quoted text allows literal regex patterns but rejects unescaped `$`, backticks, and `!`. The recognizer rejects unlisted commands, other shell chaining/operators (including `;`, `||`, and lone `&`), redirection, command/process substitutions, multiline input, wrappers, and known mutating or execution options (including `find -delete`, `find -exec*`, `file --compile`, Git external-diff/textconv/output options, and ripgrep preprocessor options). If a command cannot be parsed or its read-only behavior is uncertain, it is blocked. Interactive `!`/`!!` shell commands remain unconditionally blocked, as do other agent tools such as `write`, `edit`, and custom tools.
+For example, `ls -la`, `find . -type f -name '*.ts'`, `pwd && ls -la`, `rg -n 'PLAN_TOOLS\b' extensions/plan-mode/index.ts`, `rg -n '.*;$' extensions/plan-mode/index.ts`, and `rg -n 'PLAN_TOOLS|READ_ONLY_BASH_COMMANDS' extensions/plan-mode/index.ts | head -5 && git status --short --branch` are accepted. Every command in every pipeline and `&&` branch must independently pass the same checks. Single-quoted text is literal, so quoted regex punctuation such as backslashes and `$` is safe; double-quoted text allows literal regex patterns but rejects unescaped `$`, backticks, and `!`. The recognizer rejects unlisted commands, other shell chaining/operators (including `;`, `||`, and lone `&`), redirection, command/process substitutions, multiline input, wrappers, and known mutating or execution options (including `find -delete`, `find -exec*`, `file --compile`, Git external-diff/textconv/output options, and ripgrep preprocessor options). If a command cannot be parsed or its read-only behavior is uncertain, it is blocked. Listing `"bash"` explicitly trusts every agent Bash call and removes this read-only filter; Plan Mode does not infer side effects for any allowlisted tool. Interactive `!`/`!!` shell commands remain unconditionally blocked by the separate `user_bash` handler, even when `bash` is allowlisted.
 
-This is a tool gate, not an OS sandbox: extensions execute with Pi's normal process permissions. Pi still records extension state in the session, and the user-invoked `/plan-profile` command may update the profile selection in `plan-mode.json`.
+This is a tool gate, not an OS sandbox: extensions execute with Pi's normal process permissions. Pi still records extension state in the session, and the user-invoked `/plan-profile` command may update the profile selection in `plan-mode.json`. Allowlisting a mutating built-in such as `write` or `edit` likewise trusts every call to that exact name.
 
 The extension injects a hidden mode-context message, but does not display the plan inline. Its bundled `plan-writing` skill supplies the generic planning workflow and is included in both this package and the repository's root Pi manifest.
 
@@ -67,20 +75,26 @@ Optional configuration is read from `$PI_CODING_AGENT_DIR/plan-mode.json`, or `~
       "build": { "id": "provider/build-model", "effort": "high" }
     }
   },
-  "selectedProfile": "work"
+  "selectedProfile": "work",
+  "allowedTools": ["ask_user_question", "web_search"]
 }
 ```
 
-Replace the example IDs with exact `provider/model-id` values available in your Pi installation. Configure one to five profiles. Profile names must be safe single tokens beginning with a letter or digit and may contain letters, digits, `_`, or `-`; `__proto__`, `constructor`, and `prototype` are reserved and rejected. Each profile must define both `plan` and `build`; each `effort` must be `default`, `low`, `medium`, `high`, `xhigh`, or `max`. Pi may clamp a level to what the selected model supports. Unknown fields, duplicate JSON keys, and an invalid `selectedProfile` are reported as configuration errors. If `selectedProfile` is omitted, the first profile in file order is selected.
+Replace the example IDs with exact `provider/model-id` values available in your Pi installation. Configure one to five profiles. Profile names must be safe single tokens beginning with a letter or digit and may contain letters, digits, `_`, or `-`; `__proto__`, `constructor`, and `prototype` are reserved and rejected. Each profile must define both `plan` and `build`; each `effort` must be `default`, `low`, `medium`, `high`, `xhigh`, or `max`. Pi may clamp a level to what the selected model supports. `allowedTools` is a top-level setting shared by every profile, additive to the fixed Plan tools, and is preserved when `/plan-profile <name>` rewrites the file; it is not profile-specific. Unknown fields, duplicate JSON keys, an invalid `selectedProfile`, and malformed `allowedTools` entries are reported as configuration errors. If `selectedProfile` is omitted, the first profile in file order is selected.
+
+The extension does not validate `allowedTools` against Pi's current tool registry, which permits third-party tools that register later. This is an explicit trust boundary: Plan Mode cannot determine an allowlisted tool's side effects, so every call to that exact name is allowed. In particular, allowlisting `bash` removes the agent Bash command filter, and allowlisting mutating built-ins such as `write` or `edit` permits them. Interactive `!`/`!!` commands are still blocked separately. Restart Pi or run `/reload` after changing the configuration.
 
 The older top-level format remains supported:
 
 ```json
 {
   "plan": { "id": "provider/planning-model", "effort": "medium" },
-  "build": { "id": "provider/build-model", "effort": "high" }
+  "build": { "id": "provider/build-model", "effort": "high" },
+  "allowedTools": ["ask_user_question", "web_search"]
 }
 ```
+
+`allowedTools` is also accepted in this legacy top-level form and has the same global semantics. Profile selection converts legacy settings to the profile form without discarding or reordering the list.
 
 `effort: "default"` does not force a level; a fresh session uses Pi's configured default. Continue Here ignores the Build settings and keeps whatever model and effort are currently active. Missing or unavailable models and invalid configuration are reported. Selecting a profile persists it to the config file, so treat that file as user configuration rather than part of the plan-file write boundary.
 
