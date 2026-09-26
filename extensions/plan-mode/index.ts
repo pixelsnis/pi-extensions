@@ -962,27 +962,7 @@ Implement the plan in order. Run only verification authorized by the plan or req
 			}
 			config = latest.config;
 			configError = undefined;
-			const profile = selected?.profile;
-			const buildSettings = profile?.build;
-			const expectedBuildRef = settingsRef(buildSettings) ??
-				(approval.choice === "execute-here" ? prePlanModel : undefined);
-
-			if (expectedBuildRef) {
-				try {
-					await findModel(ctx, expectedBuildRef);
-				} catch (error) {
-					ctx.ui.notify(`Build model unavailable: ${error instanceof Error ? error.message : String(error)}. Plan mode remains active.`, "error");
-					return;
-				}
-			}
-
 			if (approval.choice === "execute-here") {
-				try {
-					await applyModeSettings(ctx, buildSettings, prePlanModel, prePlanEffort);
-				} catch (error) {
-					ctx.ui.notify(`Could not switch to the configured Build model and effort: ${String(error)}. Plan mode remains active.`, "error");
-					return;
-				}
 				mode = "build";
 				persistState();
 				updateBadge(ctx);
@@ -990,6 +970,16 @@ Implement the plan in order. Run only verification authorized by the plan or req
 				pi.sendUserMessage(kickoff);
 				ctx.ui.notify("Approved. Continuing execution in this session.", "info");
 				return;
+			}
+
+			const buildRef = settingsRef(selected?.profile?.build);
+			if (buildRef) {
+				try {
+					await findModel(ctx, buildRef);
+				} catch (error) {
+					ctx.ui.notify(`Build model unavailable: ${error instanceof Error ? error.message : String(error)}. Plan mode remains active.`, "error");
+					return;
+				}
 			}
 
 			const parentSession = ctx.sessionManager.getSessionFile();

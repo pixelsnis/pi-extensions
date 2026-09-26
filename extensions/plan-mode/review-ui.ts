@@ -57,7 +57,7 @@ export async function showPlanReview(
 					? "0 lines"
 					: `${scrollTop + 1}-${Math.min(scrollTop + viewportHeight, contentLines.length)} of ${contentLines.length}`;
 				lines.push(framedLine(theme.fg("muted", `Scroll ${range} · ↑↓/PgUp/PgDn · Home/End`), safeWidth));
-				lines.push(framedLine(theme.fg("accent", "[R] Refine  [N] Approve & Execute  [H] Approve & Execute Here  [Esc] Cancel"), safeWidth));
+				lines.push(framedLine(theme.fg("accent", "[R] Refine  [N] Approve & Execute  [H] Approve & Continue Here  [Esc] Cancel"), safeWidth));
 				lines.push(border(safeWidth, "╰", "─", "╯"));
 				return lines.map((line) => fit(line, safeWidth));
 			},

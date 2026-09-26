@@ -40,7 +40,7 @@ The extension injects a hidden mode-context message, but does not display the pl
 3. The agent calls `plan_present` with only the exact relative path string returned by `plan_save`. Do not substitute an absolute path or another spelling, even if it resolves to the same file. In the Pi TUI, a scrollable review shows the plan and requires an explicit choice:
    - **R — Refine:** return to chat in Plan mode without recording approval.
    - **N — Approve & Execute:** start a linked fresh session in Build mode.
-   - **H — Approve & Execute Here:** switch this session to Build mode and continue here.
+   - **H — Approve & Continue Here:** switch this session to Build mode and continue here with the current model and effort.
    - **Esc — Cancel:** keep Plan mode active; no approval is recorded.
 
 Approval uses a one-time handoff. Before execution, the extension checks that the plan still belongs to the source session and is readable, and that the selected profile has not changed. Stale, missing, or invalid plans do not execute. In a non-TUI run, `plan_present` cannot record approval and returns without executing.
@@ -82,7 +82,7 @@ The older top-level format remains supported:
 }
 ```
 
-`effort: "default"` does not force a level. Execute Here restores the level active on entry to Plan when Build uses `default`; a fresh session uses Pi's configured default. Missing or unavailable models and invalid configuration are reported. Selecting a profile persists it to the config file, so treat that file as user configuration rather than part of the plan-file write boundary.
+`effort: "default"` does not force a level; a fresh session uses Pi's configured default. Continue Here ignores the Build settings and keeps whatever model and effort are currently active. Missing or unavailable models and invalid configuration are reported. Selecting a profile persists it to the config file, so treat that file as user configuration rather than part of the plan-file write boundary.
 
 ## Troubleshooting
 
