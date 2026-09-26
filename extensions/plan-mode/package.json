@@ -1,6 +1,6 @@
 {
   "name": "@pixelsnis/pi-plan-mode",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Plan and Build modes for Pi with deny-by-default planning tools and explicit plan approval.",
   "type": "module",
   "files": [
